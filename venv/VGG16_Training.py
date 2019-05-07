@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
-import 
+
+
 
 def conv2d(x, shape, padding="SAME"):
     return tf.nn.conv2d(x, shape, strides=[1, 1, 1, 1], padding=padding)
