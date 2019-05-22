@@ -77,7 +77,102 @@ def train_network(train_data, val_data, MAXEPOCH, weight, reg_weight, keep_prob)
                                         reg_weight, FLAGS.model_dir, FLAGS.batch_size, FLAGS.debug, keep_prob)
         sample_accuracy = tf.reduce_sum(tf.cast(tf.equal(tf.argmax(all_rpn_logits_softmax, dimension=1), tf.reshape(gt_anchor_labels,\
             [-1])), tf.float32) * tf.reshape(sample_anchor_cls_masks, [-1])) / tf.reduce_sum(tf.reshape(sample_anchor_cls_masks, [-1]))
-        non_sample_accuracy = tf.reduce_sum(tf.cast(tf.equal(tf.argmax(all_rpn_logits_softmax, dimension=1), tf.reshape(gt_anchor_labels,\
-            [-1])), tf.float32) * tf.reshape(nonsample_anchor_cls_masks, [-1])) / tf.reduce_sum(tf.reshape(nonsample_anchor_cls_masks, [-1]))
+        non_sample_accuracy = tf.reduce_sum(tf.cast(tf.equal(tf.argmax(all_rpn_logits_softmax, dimension=1), \
+                                                             tf.reshape(gt_anchor_labels,[-1])),\
+            tf.float32) * tf.reshape(nonsample_anchor_cls_masks, [-1])) / tf.reduce_sum(tf.reshape(nonsample_anchor_cls_masks, [-1]))
+
+    with tf.name_scope("summary"):
+        print("Setting up summary op...")
+        tf.summary.image("bird_view_intensity", image[:, :, :, BIRDVIEW_CHANNEL - 2 : BIRDVIEW_CHANNEL - 1], max_outputs = 2)
+        trainable_var = tf.trainable_variables()
+        tf.summary.scalar("Overall_loss", Overall_loss)
+        tf.summary.scalar("regression_loss", regression_loss)
+        tf.summary.scalar("classification_loss", classification_loss)
+        if FLAGS.debug:
+            for var in trainable_var:
+                utils.add_to_regularization_and_summary(var)
+        summary_op = tf.summary.merge_all()
+
+    with tf.name_scope("Train"):
+        train_op = train(Overall_loss, trainable_var)
+
+
+        # uncomment BELOW TO RUNNING ON CPU
+        # pdb.set_trace()
+        config = tf.ConfigProto(device_count = {'GPU': 0})
+        sess = tf.Session(config=config)
+        print("Setting up Saver...")
+        saver = tf.train.saver()
+        summary_writer = tf.summary.FileWriter(FLAGS.log_dir, sess.graph)
+
+        sess.run(tf.global_variables_initializer())
+        ckpt = tf.train.get_checkpoint_state(FLAGS.logs_dir)
+
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print("Nodel restored")
+
+        total_iter = 0
+        batch1 = 0
+
+        for epoch in range(MAX_EPOCH):
+            # train in entire dateset
+            for batch in range(0, BATCHES / FLAGS.batch_size):
+                # for training
+                image_input_batch =  tr_birdview[batch * FLAGS.batch_size : batch * FLAGS.batch_size + FLAGS.batch_size]
+                anchor_label_batch = tr_anchor_label[batch * FLAGS.batch_size : batch * FLAGS.batch_size + FLAGS.batch_size]
+                anchor_regs_batch = tr_anchor_reg[batch * FLAGS.batch_size : batch * FLAGS.batch_size + FLAGS.batch_size]
+                before_sample_anchor_labelmask_batch = tr_anchor_label_mask[batch * FLAGS.batch_size : batch * FLAGS.batch_size + \
+                                                       FLAGS.batch_size]
+                anchor_regs_mask_batch = tr_anchor_reg_mask[batch * FLAGS.batch_size : batch * FLAGS.batch_size + FLAGS.batch_size]
+
+                negative_index = np.where(np.logical_and(anchor_label_batch == 0, before_sample_anchor_labelmask_batch == 1))
+                positive_index = np.where(anchor_label_batch == 1)
+
+                # for validation
+                val_image_input_batch = val_birdview[batch1 * FLAGS.batch_size : batch1 * FLAGS.batch_size + FLAGS.batch_size]
+                val_anchor_label_batch = val_anchor_label[batch1 * FLAGS.batch_size : batch1 * FLAGS.batch_size + FLAGS.batch_size]
+                val_anchor_regs_batch = val_anchor_reg[batch1 * FLAGS.batch_size : batch1 * FLAGS.batch_size + FLAGS.batch_size]
+                val_before_sample_anchor_labelmask_batch = val_anchor_label_mask[batch1 * FLAGS.batch_size : \
+                                                                                 batch1 * FLAGS.batch_size + FLAGS.batch_size]
+                val_anchor_regs_mask_batch = val_anchor_reg_mask[batch1 * FLAGS.batch_size : batch1 * FLAGS.batch_size + FLAGS.batch_size]
+
+                val_negative_index = np.where(np.logical_and(val_anchor_label_batch == 0, val_before_sample_anchor_labelmask_batch == 1))
+                val_positive_index = np.where(val_anchor_label_batch == 1)
+
+                batch1+=1
+                if batch1 >= BATCHES1:
+                    batch1 = 0
+
+                if len(positive_index[0]) > 0:
+                    # for training
+                    neg_sample_index = random.sample(range(len(negative_index[0])), len(positive_index[0]))
+                    after_sample_anchor_labelmask_batch = np.zeros(before_sample_anchor_labelmask_batch.shape)
+                    after_sample_anchor_labelmask_batch[negative_index[0][neg_sample_index], negative_index[1][neg_sample_index], \
+                        negative_index[2][neg_sample_index], negative_index[3][neg_sample_index]] = 1
+                    after_sample_anchor_labelmask_batch[positive_index[0], positive_index[1], positive_index[2], positive_index[3]] = 1
+
+                    # reshape data to fit input
+                    anchor_label_batch = np.reshape(anchor_label_batch, [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1],\
+                                                                          NUM_OF_ANCHOR])
+                    anchor_regs_batch = np.reshape(anchor_regs_batch, [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], \
+                                                                       NUM_OF_ANCHOR, NUM_OF_REGRESSION_VALUE])
+                    after_sample_anchor_labelmask_batch = np.reshape(after_sample_anchor_labelmask_batch, \
+                                                        [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+                    before_sample_anchor_labelmask_batch = np.reshape(before_sample_anchor_labelmask_batch, [FLAGS.batch_size * \
+                                                        OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+                    anchor_regs_mask_batch = np.reshape(anchor_regs_mask_batch, [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * \
+                                                                                 OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+
+                    feed_dict = {image : image_input_batch, gt_anchor_labels: anchor_label_batch,
+                                 gt_anchor_regs: anchor_regs_batch, sample_anchor_cls_masks : after_sample_anchor_labelmask_batch,\
+                                 nonsample_anchor_cls_masks:before_sample_anchor_labelmask_batch, anchor_reg_masks:anchor_regs_mask_batch}
+
+                    # for validation
+                    val_neg_sample_index = random.sample(range(len(val_negative_index[0])), len(val_positive_index[0]))
+
+
+
+
 
 
