@@ -170,6 +170,101 @@ def train_network(train_data, val_data, MAXEPOCH, weight, reg_weight, keep_prob)
 
                     # for validation
                     val_neg_sample_index = random.sample(range(len(val_negative_index[0])), len(val_positive_index[0]))
+                    val_after_sample_anchor_labelmask_batch = np.zeros(val_before_sample_anchor_labelmask_batch.shape)
+                    val_after_sample_anchor_labelmask_batch[val_negative_index[0][val_neg_sample_index], val_negative_index[1][val_neg_sample_index],\
+                        val_negative_index[2][val_neg_sample_index], val_negative_index[3][val_neg_sample_index]] = 1
+                    val_after_sample_anchor_labelmask_batch[val_positive_index[0], val_positive_index[1], val_positive_index[2],\
+                        val_positive_index[3]] = 1
+
+                    # reshape data to fit input
+                    val_anchor_label_batch = np.reshape(val_anchor_label_batch, [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1],\
+                                                         NUM_OF_ANCHOR])
+                    val_anchor_regs_batch = np.reshape(val_anchor_regs_batch, [FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], \
+                                                        NUM_OF_ANCHOR, NUM_OF_REGRESSION_VALUE])
+                    val_after_sample_anchor_labelmask_batch = np.reshape(val_after_sample_anchor_labelmask_batch, [ \
+                        FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+                    val_before_sample_anchor_labelmask_batch = np.reshape(val_before_sample_anchor_labelmask_batch, [ \
+                        FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+                    val_anchor_regs_mask_batch = np.reshape(val_anchor_regs_mask_batch, [ \
+                        FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], NUM_OF_ANCHOR])
+
+                    feed_dict1 = {image: val_image_input_batch, gt_anchor_labels: val_anchor_label_batch, \
+                                  gt_anchor_regs: val_anchor_regs_batch, \
+                                  sample_anchor_cls_masks: val_after_sample_anchor_labelmask_batch, \
+                                   nonsample_anchor_cls_masks: val_before_sample_anchor_labelmask_batch, \
+                                  anchor_reg_masks: val_anchor_regs_mask_batch}
+                    # save
+                    if (total_iter) % 10 == 0:
+                        train_Overall_loss, train_classification_loss, train_regression_loss, train_sample_accuracy, train_nonsample_accuracy, \
+                            summary_str = sess.run([Overall_loss, classification_loss, regression_loss, sample_accuracy,
+                                                    non_sample_accuracy, summary_op], feed_dict=feed_dict)
+                        print("Iter: %d, Num of postives: %d, Num of negatives: %d, Train_Overall_loss:%g, Train_classification_loss:%g, \
+                                                       Train_regression_loss:%g, Sample_training_accuracy: %g, Nonsample_training_accuracy: %g" \
+                              % (total_iter, len(positive_index[0]), len(negative_index[0]), train_Overall_loss, train_classification_loss, \
+                        train_regression_loss, train_sample_accuracy, train_nonsample_accuracy))
+                        summary_writer.add_summary(summary_str, total_iter)
+                        saver.save(sess, FLAGS.logs_dir + "model.ckpt", total_iter)
+
+                    if (total_iter) % 50 == 0:
+                        val_Overall_loss, val_classification_loss, val_regression_loss, val_sample_accuracy, val_nonsample_accuracy = \
+                        sess.run([Overall_loss, classification_loss, regression_loss, sample_accuracy, non_sample_accuracy], feed_dict=feed_dict1)
+
+                        print("Iter: %d, Num of postives: %d, Num of negatives: %d, Validation_Overall_loss:%g, Validation_classification_loss:%g, \
+                                                       Validation_regression_loss:%g, Sample_training_accuracy: %g, Nonsample_training_accuracy: %g" \
+                              % (total_iter, len(val_positive_index[0]), len(val_negative_index[0]), val_Overall_loss,\
+                        val_classification_loss, val_regression_loss, val_sample_accuracy, val_nonsample_accuracy))
+
+                    total_iter += 1
+                    sess.run(train_op, feed_dict=feed_dict)
+
+def prediction_network(data):
+    # data preparation
+    BATCHES = data.shape[0]
+    BIRDVIEW_CHANNEL = data.shape[3]
+    IMAGE_SIZE = [data.shape[1], data.shape[2]]
+    OUTPUT_IMAGE_SIZE = [data.shape[1] / 4, data.shape[2] / 4]
+    label = []
+    reg = []
+
+    with tf.name_scope("Input"):
+        image = tf.placeholder(tf.float32, shape=[FLAGS.batch_size, IMAGE_SIZE[0], IMAGE_SIZE[1], BIRDVIEW_CHANNEL], name="input_image")
+        gt_anchor_labels = tf.placeholder(tf.int64, shape=[FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], 4], name="gt_anchor_labels")
+        gt_anchor_regs = tf.placeholder(tf.float32, shape=[FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], 4, 6], name="gt_anchor_regs")
+        sample_anchor_cls_masks = tf.placeholder(tf.float32, shape=[FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1],\
+                                                        4], name="sample_anchor_masks")
+        nonsample_anchor_cls_masks = tf.placeholder(tf.float32, shape=[ \
+            FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], 4], name="nonsample_anchor_cls_masks")
+        anchor_reg_masks = tf.placeholder(tf.float32,\
+                                          shape=[FLAGS.batch_size * OUTPUT_IMAGE_SIZE[0] * OUTPUT_IMAGE_SIZE[1], 4],\
+                                          name="anchor_reg_masks")
+
+    with tf.name_scope("3D-RPN"):
+        net, classification_loss, regression_loss, Overall_loss, all_rpn_logits_softmax, all_rpn_regs = model.birdview_proposal_net(image,\
+            gt_anchor_labels, gt_anchor_regs, sample_anchor_cls_masks, anchor_reg_masks, 1, 0, FLAGS.model.dir, FLAGS.batch_size, FLAGS.debug)
+
+    with tf.name_scope("Prediction"):
+        sess = tf.Session()
+        print("Setting ip Saver...")
+        sess.run(tf.global_variables_initializer())
+        ckpt = tf.train.get_checkpoint_state(FLAGS.logs_dir)
+
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print("Model restored...")
+
+        for i in range(len(data)):
+            birdview = data[i : i + 1]
+            feed_dict = {image: birdview}
+
+            _all_rpn_logits_softmax, _all_rpn_regs = sess.run([all_rpn_logits_softmax, all_rpn_regs], feed_dict=feed_dict)
+            _all_rpn_logits_softmax = np.argmax(_all_rpn_logits_softmax, 1)
+            label.append(_all_rpn_logits_softmax.reshape(data.shape[1] / 4, data.shape[2] / 4, 4, 2))
+            reg.append(_all_rpn_regs.reshape(data.shape[1] / 4, data.shape[2] / 4, 4, 6))
+            print("prediction %d"%i)
+    return label, reg
+
+
+
 
 
 
