@@ -284,3 +284,114 @@ def MV3D(birdview, frontview, cls_mask, reg_mask, gt_ROI_labels, gt_ROI_regs, bi
 
     with tf.name_scope("3D-Proposal-net"):
         birdview_net, frontview_net = Proposal_net(birdview, frontview, model_dir, MODEL_URL, debug, keep_prob)
+
+    with tf.name_scope("ROI-pooling"):
+        birdview_pooling_ROI, frontview_pooling_ROI = region_pooling(birdview_net['birdview_upsample'], frontview_net['frontview_upsample'],\
+                                    birdview_rois, frontview_rois, birdview_box_ind, frontview_box_ind, ROI_H, ROI_W, debug)
+
+    with tf.name_scope("region-fusion-net"):
+        logits_cls, logits_reg = region_fusion_net(birdview_pooling_ROI, frontview_pooling_ROI, NUM_OF_REGRESSION_VALUE, ROI_H, ROI_W)
+
+    with tf.name_scope("loss"):
+        gt_ROI_regs = tf.reshape(gt_ROI_regs, [-1, NUM_OF_REGRESSION_VALUE])
+        gt_ROI_labels = tf.reshape(gt_ROI_labels, [-1])
+        regression_loss = tf.reduce_sum(l2_loss(logits_reg, gt_ROI_regs) * tf.cast(reg_mask, tf.float32)) / tf.cast(tf.reduce_sum(reg_mask),\
+                                                                                                                    tf.float32)
+        classification_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(labels = gt_ROI_labels, logits = logits_cls) * \
+                                            tf.cast(cls_mask, tf.float32)) / tf.cast(tf.reduce_sum(cls_mask), tf.float32)
+        trainable_var = tf.trainable_variables()
+        weight_decay = 0
+        for var in trainable_var:
+            weight_decay = weight_decay + tf.nn.l2_loss(var)
+
+        loss = regression_loss + weight * classification_loss + reg_weight * weight_decay
+
+    return loss, classification_loss, regression_loss, logits_cls, logits_reg
+
+def birdview_proposal_net(birdview, gt_anchor_labels, gt_anchor_regs, anchor_cls_masks, anchor_reg_masks, weight, reg_weight, model_dir,\
+                          batch_size, debug, keep_prob = 1.0):
+    """  3D region proposal network """
+    # input birdview, dropout probability, weight of vgg, ground-truth labels, ground-truth regression value,
+    # anchor classfication mask and anchor regression mask
+    # The birdview has more than three channel, thus we need to train first two conv layers in vgg-16
+    # Miscellaneous definition
+    MODEL_URL = 'http://www.vlfeat.org/matconvnet/models/beta16/imagenet-vgg-verydeep-16.mat'
+    NUM_OF_REGRESSION_VALUE = 6
+    NUM_OF_ANCHOR = 4
+    FCN_KERNEL_SIZE = 3
+
+    print("setting up vgg initialized conv layers ...")
+    model_data = utils.get_model_data(model_dir, MODEL_URL)
+    weights = np.squeeze(model_data['layers'])
+
+    # store output from classfication layer and regression layer
+    all_rpn_logits = []
+    all_rpn_regs = []
+    current = birdview
+
+    # vgg
+    with tf.name_scope("Vgg-16"):
+        net = vgg_net_birdview(weights, birdview, debug, keep_prob)
+        current = net["birdview_relu4_3"]
+    with tf.name_scope("Upsample_layer"):
+        kernels = utils.weight_variable([3, 3, 256, 256], name="upsample_w")
+        bias = utils.bias_variable([256], name="upsample_b")
+        net['upsample'] = utils.conv2d_transpose_strided(current, kernels, bias, name = 'upsample', keep_prob = keep_prob)
+        current = net['upsample']
+        if debug:
+            utils.add_activation_summary(current)
+    with tf.name_scope("Fully_conv_layer"):
+    # Fully convolution layer of 3D proposal network. Similar to the last layer of Region Prosal Network.
+        for j in range(NUM_OF_ANCHOR):
+            kernels_cls = utils.weight_variable([FCN_KERNEL_SIZE, FCN_KERNEL_SIZE, 256, 2], name="FCN_cls_w" + str(j))
+            kernels_reg = utils.weight_variable([FCN_KERNEL_SIZE, FCN_KERNEL_SIZE, 256, NUM_OF_REGRESSION_VALUE], name="FCN_reg_w" + str(j))
+            bias_cls = utils.bias_variable([2], name="FCN_cls_b" + str(j))
+            bias_reg = utils.bias_variable([6], name="FCN_reg_b" + str(j))
+            rpn_logits = utils.conv2d_basic(current, kernels_cls, bias_cls)
+            rpn_regs = utils.conv2d_basic(current, kernels_reg, bias_reg)
+            net["FCN_cls_" + str(j)] = rpn_logits
+            net["FCN_reg_" + str(j)] = rpn_regs
+            if debug:
+                utils.add_activation_summary(rpn_logits)
+
+            rpn_logits = tf.reshape(rpn_logits, [batch_size, -1, 2])
+            all_rpn_logits.append(rpn_logits)
+            # Values required clip might be different
+            # rpn_regs = tf.clip_by_value(rpn_regs, -0.2, 0.2)
+            rpn_regs = tf.reshape(rpn_regs, [batch_size, -1, NUM_OF_REGRESSION_VALUE])
+            all_rpn_regs.append(rpn_regs)
+
+    with tf.name_scope("Cls_and_reg_loss"):
+
+        all_rpn_logits = tf.concat(all_rpn_logits, 1)
+        all_rpn_regs = tf.concat(all_rpn_regs, 1)
+        # pdb.set_trace()
+        all_rpn_logits = tf.reshape(all_rpn_logits, [-1, 2])
+        all_rpn_logits_softmax = tf.nn.softmax(all_rpn_logits, dim=-1)
+        all_rpn_regs = tf.reshape(all_rpn_regs, [-1, NUM_OF_REGRESSION_VALUE])
+
+        # Compute the loss function
+        gt_anchor_labels = tf.reshape(gt_anchor_labels, [-1])
+        gt_anchor_regs = tf.reshape(gt_anchor_regs, [-1, NUM_OF_REGRESSION_VALUE])
+        anchor_cls_masks = tf.reshape(anchor_cls_masks, [-1])
+        anchor_reg_masks = tf.reshape(anchor_reg_masks, [-1])
+
+        # Classification loss
+        classification_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=gt_anchor_labels,
+                                                                             logits=all_rpn_logits) * anchor_cls_masks
+        classification_loss = tf.reduce_sum(classification_loss) / tf.maximum(tf.reduce_sum(anchor_cls_masks), 1)
+
+        # regression loss
+        regression_loss = tf.reduce_sum(l2_loss(all_rpn_regs, gt_anchor_regs) * anchor_reg_masks) / tf.maximum(
+            tf.reduce_sum(anchor_reg_masks), 1)
+
+        # regularization
+        trainable_var = tf.trainable_variables()
+        weight_decay = 0
+        for var in trainable_var:
+            weight_decay = weight_decay + tf.nn.l2_loss(var)
+
+        Overall_loss = weight * classification_loss + regression_loss + reg_weight * weight_decay
+
+    return net, classification_loss, regression_loss, Overall_loss, all_rpn_logits_softmax, all_rpn_regs
+
