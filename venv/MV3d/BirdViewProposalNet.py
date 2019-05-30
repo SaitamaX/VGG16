@@ -99,7 +99,7 @@ def train_network(train_data, val_data, MAXEPOCH, weight, reg_weight, keep_prob)
 
         # uncomment BELOW TO RUNNING ON CPU
         # pdb.set_trace()
-        config = tf.ConfigProto(device_count = {'GPU': 0})
+        config = tf.ConfigProto(device_count = {'GPU': 1})
         sess = tf.Session(config=config)
         print("Setting up Saver...")
         saver = tf.train.saver()

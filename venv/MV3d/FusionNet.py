@@ -268,4 +268,53 @@ def prediction_network(data):
                                           FRONTVIEW_CHANNEL], name="frontview")
 
         # rois: [upleft corner y, upleft corner x, down_right corner y, down_right corner x]
-        frontview_rois = tf.placeholder(tf.float32, shape=[FLAGS.batch_size * NUM_OF_ROI, 4], name = "birdview_rois")
+        frontview_rois = tf.placeholder(tf.float32, shape=[FLAGS.batch_size * NUM_OF_ROI, 4], name = "frontview_rois")
+        birdview_rois = tf.placeholder(tf.float32, shape=[FLAGS.batch_size * NUM_OF_ROI, 4], name = "birdview_rois")
+
+        frontview_box_ind = tf.placeholder(tf.int32, shape=[FLAGS.batch_size * NUM_OF_ROI], name = "frontview_box_ind")
+        birdview_box_ind = tf.placeholder(tf.int32, shape=[FLAGS.batch_size * NUM_OF_ROI], name = "birdview_box_ind")
+
+        before_sample_cls_mask = tf.placeholder(tf.int32, shape=[FLAGS.batch_size * NUM_OF_ROI, 1], name = "before_sample_cls_mask")
+        after_sample_cls_mask = tf.placeholder(tf.int32, shape=[FLAGS.batch_size * NUM_OF_ROI, 1], name = "after_sample_cls_mask")
+        reg_mask = tf.placeholder(tf.int32, shape=[FLAGS.batch_size * NUM_OF_ROI, 1], name = "reg_mask")
+        gt_ROI_labels = tf.placeholder(tf.int64, shape=[FLAGS.batch_size, NUM_OF_ROI], name = "gt_ROI_labels")
+        gt_ROI_regs = tf.placeholder(tf.float32, shape=[FLAGS.batch_size, NUM_OF_ROI, 24], name = "gt_ROI_regs")
+
+    with tf.name_scope("MV3D"):
+        Overall_loss, classification_loss, regression_loss, logits_cls, logits_reg = model.MV3D(birdview, frontview, after_sample_cls_mask,\
+            reg_mask, gt_ROI_regs, birdview_rois, frontview_rois, birdview_box_ind, frontview_box_ind, ROI_H, ROI_W, 24, FLAGS.model_dir,\
+                                                                                                1, 0, FLAGS.debug)
+    with tf.name_scope("Prediction"):
+
+        config = tf.ConfigProto(device_count = {'GPU': 1})
+        sess = tf.Session(config=config)
+
+        print("Setting up Saver...")
+        saver = tf.train.Saver()
+
+        sess.run(tf.global_variables_initializer())
+        ckpt = tf.train.get_checkpoint_state(FLAGS.logs_dir)
+
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print("Model restored...")
+
+        for i in range(len(data_birdview)):
+            birdview_batch = data_birdview[i: i + 1]
+            frontview_batch = data_frontview[i: i + 1]
+
+            birdview_rois_batch = data_birdview_box_ind[i * NUM_OF_ROI : i * NUM_OF_ROI + NUM_OF_ROI]
+            frontview_rois_batch = data_frontview_rois[i * NUM_OF_ROI :i * NUM_OF_ROI + NUM_OF_ROI]
+
+            birdview_box_ind_batch = data_birdview_box_ind[i * NUM_OF_ROI: i * NUM_OF_ROI + NUM_OF_ROI]
+            frontview_box_ind_batch = data_frontview_box_ind[i * NUM_OF_ROI: i * NUM_OF_ROI + NUM_OF_ROI]
+
+            feed_dict = {birdview: birdview_batch, frontview: frontview_batch, birdview_rois: birdview_rois_batch, \
+                         frontview_rois: frontview_rois_batch, birdview_box_ind: birdview_box_ind_batch, frontview_box_ind: frontview_box_ind_batch}
+
+            _logits_cls, _logits_reg = sess.run([logits_cls, logits_reg], feed_dict=feed_dict)
+            _logits_cls = np.argmax(_logits_cls, 1)
+            label.append(_logits_cls)
+            reg.append(_logits_reg)
+            print('prediction %d' % i)
+

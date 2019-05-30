@@ -33,7 +33,7 @@
 # MAX_EPOCH: training epoches. weight: the weight of classification loss.
 # reg_weight: the weight of l2 regularization. keep_prob: dropout probability.
 
-import birdview_proposal_net
+import BirdViewProposalNet
 import numpy as np
 import pdb
 from os.path import expanduser
@@ -42,7 +42,7 @@ from os.path import expanduser
 training_data = []
 validation_data = []
 
-loadroot = expanduser("~") + '/Desktop/MV3D/TEST_DATA/Proposal-net/'
+loadroot = expanduser("~") + '/Desktop/MV3D/Proposal-net/'
 
 birdview = np.load(loadroot + 'birdview_set.npy')
 anchor_label = np.load(loadroot + 'cls_label.npy')
@@ -58,6 +58,6 @@ weight = 1.0
 reg_weight = 0.1
 keep_prob = 0.7
 
-# label, reg = birdview_proposal_net.prediction_network(birdview)
+# label, reg = BirdViewProposalNet.prediction_network(birdview)
 
-birdview_proposal_net.train_network(training_data, validation_data, MAX_EPOCH, weight, reg_weight, keep_prob)
+BirdViewProposalNet.train_network(training_data, validation_data, MAX_EPOCH, weight, reg_weight, keep_prob)

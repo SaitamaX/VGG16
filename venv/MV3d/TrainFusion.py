@@ -44,7 +44,7 @@
 # The values in data_reg_mask are either be one or zero. Being one means the corresponding regions of regression are counted in training otherwise
 # are not
 
-import fusion_net
+import FusionNet
 import numpy as np
 import pdb
 from os.path import expanduser
@@ -78,4 +78,4 @@ train_data.extend((data_birdview, data_frontview, data_birdview_rois, data_front
 val_data.extend((data_birdview, data_frontview, data_birdview_rois, data_frontview_rois, data_birdview_box_ind, data_frontview_box_ind,\
                  data_ROI_labels, data_ROI_regs, data_cls_mask, data_reg_mask))
 
-fusion_net.train_network(train_data, val_data, MAX_EPOCH, weight, reg_weight, keep_prob)
+FusionNet.train_network(train_data, val_data, MAX_EPOCH, weight, reg_weight, keep_prob)
